@@ -231,6 +231,9 @@ body {
           <button type="button" class="btn btn-primary" id="btn-camera">📷 撮影する</button>
           <button type="button" class="btn btn-secondary" id="btn-library">🖼 写真から選ぶ</button>
         </div>
+        <div class="photo-buttons" id="ai-row" hidden style="margin-top: 8px;">
+          <button type="button" class="btn btn-secondary" id="btn-ai">🤖 AIで読み取る</button>
+        </div>
         <input type="file" id="input-camera" accept="image/*" capture="environment" hidden />
         <input type="file" id="input-library" accept="image/*" hidden />
       </div>
@@ -306,6 +309,21 @@ body {
       <p>書き出したファイルを読み込んで復元します。現在の記録に追加されます（同じ記録は重複しません）。</p>
       <button type="button" class="btn btn-secondary btn-block" id="btn-import">📥 ファイルを読み込む</button>
       <input type="file" id="input-import" accept=".json,application/json" hidden />
+    </div>
+    <div class="settings-section">
+      <h3>AI自動認識（Claude API）</h3>
+      <p>写真から銘柄・種類・度数などを自動で読み取って入力する機能です。Anthropic社のAPIキーが必要です（従量課金）。キーはこの端末の中だけに保存され、写真はAnthropicのAPIにのみ送信されます。</p>
+      <label class="field">APIキー
+        <input type="password" id="ai-key" placeholder="sk-ant-api03-..." autocomplete="off" />
+      </label>
+      <label class="field">使用するAI
+        <select id="ai-model">
+          <option value="claude-haiku-4-5">Haiku 4.5（約0.5円/枚・速い）</option>
+          <option value="claude-sonnet-5">Sonnet 5（約1円/枚・バランス）</option>
+          <option value="claude-opus-4-8">Opus 4.8（約2〜3円/枚・最高精度）</option>
+        </select>
+      </label>
+      <p class="hint" id="ai-status"></p>
     </div>
     <div class="settings-section">
       <h3>このアプリについて</h3>
@@ -437,6 +455,22 @@ function toast(msg) {
 function todayIso() {
   const d = new Date();
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+/* 小さな設定値の保存用（記録本体はIndexedDB、こちらはlocalStorage） */
+function loadJson(key, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return v !== null ? JSON.parse(v) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function saveJson(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // 保存失敗（容量超過など）は無視
+  }
 }
 
 /* 写真を縮小してdataURL(JPEG)にする（容量節約） */
@@ -581,6 +615,7 @@ function setPhoto(dataUrl) {
     img.removeAttribute('src');
     img.classList.remove('has-img');
   }
+  $('ai-row').hidden = !currentPhoto;
 }
 
 async function handlePhotoFile(file) {
@@ -706,6 +741,132 @@ function showDetail(id) {
   show('screen-detail');
 }
 $('detail-back').addEventListener('click', () => show('screen-list'));
+
+/* ================= AI自動認識（Claude API） ================= */
+let aiSettings = Object.assign({ apiKey: '', model: 'claude-haiku-4-5' }, loadJson('osake-ai', {}));
+
+function updateAiStatus() {
+  $('ai-status').textContent = aiSettings.apiKey
+    ? '✓ 設定済み。リサーチ画面で写真を付けると「🤖 AIで読み取る」ボタンが使えます。'
+    : 'APIキーは console.anthropic.com で発行できます（アカウント登録とクレジット購入が必要です）。';
+}
+$('ai-key').addEventListener('input', (e) => {
+  aiSettings.apiKey = e.target.value.trim();
+  saveJson('osake-ai', aiSettings);
+  updateAiStatus();
+});
+$('ai-model').addEventListener('change', (e) => {
+  aiSettings.model = e.target.value;
+  saveJson('osake-ai', aiSettings);
+});
+$('ai-key').value = aiSettings.apiKey;
+$('ai-model').value = aiSettings.model;
+updateAiStatus();
+
+/* AIに返してもらう項目の定義（構造化出力で確実にJSONを受け取る） */
+const AI_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['name', 'type', 'brewery', 'origin', 'abv', 'seimai', 'nihonshudo', 'sakamai', 'meisho', 'grape', 'vintage', 'aging', 'style', 'ingredient'],
+  properties: {
+    name: { type: 'string', description: '銘柄・商品名（例: 獺祭 純米大吟醸45）' },
+    type: { type: 'string', enum: TYPES, description: 'お酒の種類' },
+    brewery: { type: 'string', description: '蔵元・メーカー名' },
+    origin: { type: 'string', description: '産地（都道府県や国。例: 山口県 / フランス）' },
+    abv: { type: 'string', description: 'アルコール度数。数値のみ（例: 15.5）' },
+    seimai: { type: 'string', description: '日本酒の精米歩合。数値のみ（例: 45）' },
+    nihonshudo: { type: 'string', description: '日本酒度（例: +3）' },
+    sakamai: { type: 'string', description: '酒米・使用米（例: 山田錦）' },
+    meisho: { type: 'string', enum: ['', '純米大吟醸', '純米吟醸', '特別純米', '純米', '大吟醸', '吟醸', '特別本醸造', '本醸造', '普通酒'], description: '日本酒の特定名称' },
+    grape: { type: 'string', description: 'ワインのぶどう品種' },
+    vintage: { type: 'string', description: 'ワインのヴィンテージ年。数値のみ' },
+    aging: { type: 'string', description: 'ウイスキーの熟成年数。数値のみ' },
+    style: { type: 'string', description: 'ビールのスタイル（例: IPA）' },
+    ingredient: { type: 'string', description: '焼酎の原料（例: 芋 / 麦 / 米）' },
+  },
+};
+
+async function recognizePhoto() {
+  if (!currentPhoto) return;
+  if (!aiSettings.apiKey) {
+    alert('AI自動認識を使うには、設定タブでAPIキーを登録してください。');
+    return;
+  }
+  const btn = $('btn-ai');
+  btn.disabled = true;
+  const origLabel = btn.textContent;
+  btn.textContent = '🤖 読み取り中…';
+  try {
+    const base64 = currentPhoto.split(',')[1];
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': aiSettings.apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: aiSettings.model,
+        max_tokens: 1024,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
+            { type: 'text', text: 'このお酒のボトル・ラベルの写真から、読み取れる商品情報を抽出してください。ラベルから確実に読み取れない項目は空文字にしてください（推測で埋めない）。数値の項目は単位を付けず数値のみで答えてください。' },
+          ],
+        }],
+        output_config: { format: { type: 'json_schema', schema: AI_SCHEMA } },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => null);
+      const msg = err && err.error ? err.error.message : 'HTTP ' + res.status;
+      if (res.status === 401) throw new Error('APIキーが正しくありません。設定タブで確認してください。');
+      if (res.status === 429) throw new Error('リクエストが混み合っています。少し待ってからもう一度お試しください。');
+      if (String(msg).toLowerCase().includes('credit')) throw new Error('APIクレジットが不足しています。console.anthropic.com でクレジットを購入してください。');
+      throw new Error('読み取りに失敗しました（' + msg + '）');
+    }
+    const data = await res.json();
+    if (data.stop_reason === 'refusal') throw new Error('この画像は読み取れませんでした。別の写真でお試しください。');
+    const textBlock = (data.content || []).find((b) => b.type === 'text');
+    if (!textBlock) throw new Error('結果を取得できませんでした。もう一度お試しください。');
+    let result;
+    try {
+      result = JSON.parse(textBlock.text);
+    } catch {
+      throw new Error('結果の解析に失敗しました。もう一度お試しください。');
+    }
+    applyAiResult(result);
+    toast('読み取りました 🤖 内容を確認してください');
+  } catch (err) {
+    if (err instanceof TypeError) {
+      alert('通信に失敗しました。インターネット接続をご確認ください。');
+    } else {
+      alert(err.message || 'AIの読み取りに失敗しました。');
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origLabel;
+  }
+}
+
+/* AIの結果をフォームに反映（入力済みの欄は上書きしない） */
+function applyAiResult(r) {
+  const setIfEmpty = (id, val) => {
+    if (val && !$(id).value.trim()) $(id).value = val;
+  };
+  if (r.type && TYPES.includes(r.type)) $('r-type').value = r.type;
+  setIfEmpty('r-name', r.name);
+  setIfEmpty('r-brewery', r.brewery);
+  setIfEmpty('r-origin', r.origin);
+  const extraKeys = ['abv', 'seimai', 'nihonshudo', 'sakamai', 'meisho', 'grape', 'vintage', 'aging', 'style', 'ingredient'];
+  for (const k of extraKeys) {
+    if (r[k] && !currentExtra[k]) currentExtra[k] = r[k];
+  }
+  renderExtraFields();
+}
+$('btn-ai').addEventListener('click', recognizePhoto);
 
 /* ================= 設定・バックアップ ================= */
 $('btn-settings').addEventListener('click', () => show('screen-settings'));
