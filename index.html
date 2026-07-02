@@ -115,13 +115,13 @@ body {
 
 /* ===== フォーム / 詳細 ===== */
 .form-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
-label.field { display: block; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
-label.field input, label.field select, label.field textarea {
+.field { display: block; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+.field input, .field select, .field textarea {
   display: block; width: 100%; margin-top: 5px; padding: 11px;
   font-size: 16px; border: 1px solid var(--border); border-radius: 10px;
   background: #fff; color: var(--text);
 }
-label.field textarea { resize: vertical; min-height: 90px; }
+.field textarea { resize: vertical; min-height: 90px; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 
 .photo-area { text-align: center; margin-bottom: 14px; }
@@ -144,7 +144,7 @@ label.field textarea { resize: vertical; min-height: 90px; }
 .star-input { display: flex; gap: 6px; margin-top: 6px; }
 .star-input button {
   appearance: none; border: none; background: none; font-size: 32px; cursor: pointer;
-  color: #d8cfc4; padding: 0 2px;
+  color: #d8cfc4; padding: 0 2px; touch-action: manipulation;
 }
 .star-input button.on { color: var(--star); }
 
@@ -202,6 +202,7 @@ label.field textarea { resize: vertical; min-height: 90px; }
       <select id="sort">
         <option value="newest">新しい順</option>
         <option value="rating">評価順</option>
+        <option value="repeat">リピート順</option>
         <option value="name">名前順</option>
       </select>
     </div>
@@ -253,12 +254,20 @@ label.field textarea { resize: vertical; min-height: 90px; }
           <input type="date" id="r-date" />
         </label>
       </div>
-      <label class="field">購入場所
-        <input type="text" id="r-place" placeholder="例: ○○酒店 / スーパー" />
-      </label>
-      <label class="field">評価
+      <div class="field-row">
+        <label class="field">購入場所
+          <input type="text" id="r-place" placeholder="例: ○○酒店 / スーパー" />
+        </label>
+        <label class="field">産地
+          <input type="text" id="r-origin" placeholder="例: 山口県 / フランス" />
+        </label>
+      </div>
+      <div class="field">評価
         <div class="star-input" id="star-input"></div>
-      </label>
+      </div>
+      <div class="field">リピートしたい度
+        <div class="star-input" id="star-repeat"></div>
+      </div>
       <label class="field">感想・メモ
         <textarea id="r-memo" placeholder="味わい、香り、合わせた料理、また買いたいか…など"></textarea>
       </label>
@@ -359,6 +368,7 @@ let records = [];
 let editingId = null;   // null = 新規
 let currentPhoto = '';  // dataURL
 let currentRating = 0;
+let currentRepeat = 0;  // リピートしたい度
 let filterType = 'all';
 
 const $ = (id) => document.getElementById(id);
@@ -442,9 +452,11 @@ function renderList() {
       (r.name || '').toLowerCase().includes(q) ||
       (r.brewery || '').toLowerCase().includes(q) ||
       (r.memo || '').toLowerCase().includes(q) ||
-      (r.place || '').toLowerCase().includes(q));
+      (r.place || '').toLowerCase().includes(q) ||
+      (r.origin || '').toLowerCase().includes(q));
   }
   if (sort === 'rating') list.sort((a, b) => (b.rating || 0) - (a.rating || 0) || b.id - a.id);
+  else if (sort === 'repeat') list.sort((a, b) => (b.repeat || 0) - (a.repeat || 0) || b.id - a.id);
   else if (sort === 'name') list.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ja'));
   else list.sort((a, b) => b.id - a.id);
 
@@ -463,6 +475,7 @@ function renderList() {
         <p class="record-sub">${escapeHtml(sub)}</p>
         <div class="record-meta">
           <span class="stars-small">${starsText(r.rating || 0)}</span>
+          ${r.repeat ? `<span class="stars-small">🔁${'★'.repeat(r.repeat)}</span>` : ''}
           <span class="type-badge">${escapeHtml(r.type || 'その他')}</span>
         </div>
       </div>
@@ -477,18 +490,26 @@ $('record-list').addEventListener('click', (e) => {
 });
 
 /* ================= 入力画面 ================= */
-function renderStars() {
-  $('star-input').innerHTML = [1, 2, 3, 4, 5].map((n) =>
-    `<button type="button" data-star="${n}" class="${n <= currentRating ? 'on' : ''}">★</button>`
+function renderStarWidget(el, value) {
+  el.innerHTML = [1, 2, 3, 4, 5].map((n) =>
+    `<button type="button" data-star="${n}" class="${n <= value ? 'on' : ''}">★</button>`
   ).join('');
 }
-$('star-input').addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-star]');
-  if (!btn) return;
-  const n = Number(btn.dataset.star);
-  currentRating = (currentRating === n) ? 0 : n; // 同じ星をもう一度押すと解除
-  renderStars();
-});
+function renderStars() {
+  renderStarWidget($('star-input'), currentRating);
+  renderStarWidget($('star-repeat'), currentRepeat);
+}
+function bindStarInput(id, getVal, setVal) {
+  $(id).addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-star]');
+    if (!btn) return;
+    const n = Number(btn.dataset.star);
+    setVal(getVal() === n ? 0 : n); // 同じ星をもう一度押すと解除
+    renderStars();
+  });
+}
+bindStarInput('star-input', () => currentRating, (v) => { currentRating = v; });
+bindStarInput('star-repeat', () => currentRepeat, (v) => { currentRepeat = v; });
 
 function setPhoto(dataUrl) {
   currentPhoto = dataUrl || '';
@@ -525,8 +546,10 @@ function openForm(record) {
   $('r-price').value = record ? (record.price || '') : '';
   $('r-date').value = record ? (record.date || '') : todayIso();
   $('r-place').value = record ? (record.place || '') : '';
+  $('r-origin').value = record ? (record.origin || '') : '';
   $('r-memo').value = record ? (record.memo || '') : '';
   currentRating = record ? (record.rating || 0) : 0;
+  currentRepeat = record ? (record.repeat || 0) : 0;
   renderStars();
   setPhoto(record ? record.photo : '');
   show('screen-form');
@@ -549,7 +572,9 @@ $('btn-save').addEventListener('click', async () => {
     price: $('r-price').value,
     date: $('r-date').value,
     place: $('r-place').value.trim(),
+    origin: $('r-origin').value.trim(),
     rating: currentRating,
+    repeat: currentRepeat,
     memo: $('r-memo').value.trim(),
     photo: currentPhoto,
   };
@@ -587,9 +612,11 @@ function showDetail(id) {
   const rows = [
     ['種類', (TYPE_ICONS[r.type] || '') + ' ' + (r.type || 'その他')],
     ['蔵元・メーカー', r.brewery],
+    ['産地', r.origin],
     ['価格', r.price ? '¥' + Number(r.price).toLocaleString('ja-JP') : ''],
     ['日付', r.date ? fmtDate(r.date) : ''],
     ['購入場所', r.place],
+    ['リピート', r.repeat ? starsText(r.repeat) : ''],
   ].filter((row) => row[1]);
   $('detail-body').innerHTML = `
     ${r.photo ? `<img class="detail-photo" src="${r.photo}" alt="お酒の写真" />` : ''}
