@@ -262,6 +262,7 @@ body {
           <input type="text" id="r-origin" placeholder="例: 山口県 / フランス" />
         </label>
       </div>
+      <div class="field-row" id="extra-fields"></div>
       <div class="field">評価
         <div class="star-input" id="star-input"></div>
       </div>
@@ -323,6 +324,39 @@ body {
 const TYPES = ['日本酒', 'ビール', 'ワイン', 'ウイスキー', '焼酎', 'ハイボール・チューハイ', 'リキュール・梅酒', 'その他'];
 const TYPE_ICONS = { '日本酒': '🍶', 'ビール': '🍺', 'ワイン': '🍷', 'ウイスキー': '🥃', '焼酎': '🍶', 'ハイボール・チューハイ': '🥂', 'リキュール・梅酒': '🍹', 'その他': '🍸' };
 
+/* 種類ごとの専門項目（共通＋種類別に自動で切り替わる） */
+const COMMON_EXTRA = [
+  { key: 'abv', label: 'アルコール度数（%）', input: 'number', placeholder: '例: 15.5', unit: '%' },
+];
+const TYPE_EXTRA = {
+  '日本酒': [
+    { key: 'seimai', label: '精米歩合（%）', input: 'number', placeholder: '例: 45', unit: '%' },
+    { key: 'nihonshudo', label: '日本酒度', input: 'text', placeholder: '例: +3（辛口）/ -2（甘口）' },
+    { key: 'sakamai', label: '酒米（使用米）', input: 'text', placeholder: '例: 山田錦' },
+    { key: 'meisho', label: '特定名称', input: 'select',
+      options: ['', '純米大吟醸', '純米吟醸', '特別純米', '純米', '大吟醸', '吟醸', '特別本醸造', '本醸造', '普通酒'] },
+  ],
+  'ワイン': [
+    { key: 'grape', label: 'ぶどう品種', input: 'text', placeholder: '例: シャルドネ' },
+    { key: 'vintage', label: 'ヴィンテージ（年）', input: 'number', placeholder: '例: 2019', unit: '年' },
+  ],
+  'ウイスキー': [
+    { key: 'aging', label: '熟成年数', input: 'number', placeholder: '例: 12', unit: '年' },
+  ],
+  'ビール': [
+    { key: 'style', label: 'スタイル', input: 'text', placeholder: '例: IPA / ピルスナー' },
+  ],
+  '焼酎': [
+    { key: 'ingredient', label: '原料', input: 'text', placeholder: '例: 芋 / 麦 / 米' },
+  ],
+};
+function extraFieldDefs(type) {
+  return COMMON_EXTRA.concat(TYPE_EXTRA[type] || []);
+}
+function allExtraDefs() {
+  return COMMON_EXTRA.concat(...Object.values(TYPE_EXTRA));
+}
+
 /* ================= IndexedDB ================= */
 const DB_NAME = 'osake-memo';
 const STORE = 'records';
@@ -369,6 +403,7 @@ let editingId = null;   // null = 新規
 let currentPhoto = '';  // dataURL
 let currentRating = 0;
 let currentRepeat = 0;  // リピートしたい度
+let currentExtra = {};  // 専門項目の入力値（種類を切り替えても消えないよう保持）
 let filterType = 'all';
 
 const $ = (id) => document.getElementById(id);
@@ -453,7 +488,8 @@ function renderList() {
       (r.brewery || '').toLowerCase().includes(q) ||
       (r.memo || '').toLowerCase().includes(q) ||
       (r.place || '').toLowerCase().includes(q) ||
-      (r.origin || '').toLowerCase().includes(q));
+      (r.origin || '').toLowerCase().includes(q) ||
+      Object.values(r.extra || {}).join(' ').toLowerCase().includes(q));
   }
   if (sort === 'rating') list.sort((a, b) => (b.rating || 0) - (a.rating || 0) || b.id - a.id);
   else if (sort === 'repeat') list.sort((a, b) => (b.repeat || 0) - (a.repeat || 0) || b.id - a.id);
@@ -511,6 +547,30 @@ function bindStarInput(id, getVal, setVal) {
 bindStarInput('star-input', () => currentRating, (v) => { currentRating = v; });
 bindStarInput('star-repeat', () => currentRepeat, (v) => { currentRepeat = v; });
 
+/* 専門項目の描画（種類に応じて切り替え） */
+function renderExtraFields() {
+  const defs = extraFieldDefs($('r-type').value);
+  $('extra-fields').innerHTML = defs.map((d) => {
+    const val = currentExtra[d.key] ?? '';
+    if (d.input === 'select') {
+      return `<label class="field">${escapeHtml(d.label)}
+        <select data-key="${d.key}">${d.options.map((o) =>
+          `<option value="${escapeHtml(o)}"${o === val ? ' selected' : ''}>${o === '' ? '選択しない' : escapeHtml(o)}</option>`).join('')}
+        </select></label>`;
+    }
+    const numAttrs = d.input === 'number' ? ' inputmode="decimal" step="any"' : '';
+    return `<label class="field">${escapeHtml(d.label)}
+      <input type="${d.input}"${numAttrs} data-key="${d.key}" value="${escapeHtml(val)}" placeholder="${escapeHtml(d.placeholder || '')}" /></label>`;
+  }).join('');
+}
+function handleExtraInput(e) {
+  const key = e.target.dataset ? e.target.dataset.key : null;
+  if (key) currentExtra[key] = e.target.value;
+}
+$('extra-fields').addEventListener('input', handleExtraInput);
+$('extra-fields').addEventListener('change', handleExtraInput);
+$('r-type').addEventListener('change', renderExtraFields);
+
 function setPhoto(dataUrl) {
   currentPhoto = dataUrl || '';
   const img = $('photo-preview');
@@ -550,6 +610,8 @@ function openForm(record) {
   $('r-memo').value = record ? (record.memo || '') : '';
   currentRating = record ? (record.rating || 0) : 0;
   currentRepeat = record ? (record.repeat || 0) : 0;
+  currentExtra = record && record.extra ? { ...record.extra } : {};
+  renderExtraFields();
   renderStars();
   setPhoto(record ? record.photo : '');
   show('screen-form');
@@ -575,6 +637,11 @@ $('btn-save').addEventListener('click', async () => {
     origin: $('r-origin').value.trim(),
     rating: currentRating,
     repeat: currentRepeat,
+    extra: Object.fromEntries(
+      Object.entries(currentExtra)
+        .map(([k, v]) => [k, String(v).trim()])
+        .filter(([, v]) => v !== '')
+    ),
     memo: $('r-memo').value.trim(),
     photo: currentPhoto,
   };
@@ -609,10 +676,16 @@ function showDetail(id) {
   const r = records.find((x) => x.id === id);
   if (!r) return;
   detailId = id;
+  const extraRows = [];
+  for (const d of allExtraDefs()) {
+    const v = r.extra && r.extra[d.key];
+    if (v) extraRows.push([d.label.replace(/（.*?）/, ''), v + (d.unit || '')]);
+  }
   const rows = [
     ['種類', (TYPE_ICONS[r.type] || '') + ' ' + (r.type || 'その他')],
     ['蔵元・メーカー', r.brewery],
     ['産地', r.origin],
+    ...extraRows,
     ['価格', r.price ? '¥' + Number(r.price).toLocaleString('ja-JP') : ''],
     ['日付', r.date ? fmtDate(r.date) : ''],
     ['購入場所', r.place],
